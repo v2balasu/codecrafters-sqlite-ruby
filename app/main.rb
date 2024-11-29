@@ -53,7 +53,7 @@ def main
   when '.tables'
     tables
   else
-    raise 'Invalid command'
+    query(command)
   end
 end
 
@@ -89,13 +89,33 @@ def tables
   puts table_names.join("\s")
 end
 
+def query(query_str)
+  raise "Unsupported Query #{query_str}" unless query_str.match?(/^SELECT COUNT\(\*\) FROM [a-z]+$/)
+
+  table_name = query_str.split[-1]
+  table_data = table_info.find { |ti| ti[:table_name] == table_name }
+
+  raise "Invalid table #{table_name}" unless table_data
+
+  puts get_page_cell_data(table_data[:page_num]).count
+end
+
 def table_info
   return @table_info unless @table_info.nil?
 
-  page_stream = get_page(0)
-  page_header_offset = 100
-  cell_count_offset = 103
-  cell_array_offset = 108
+  @table_info = get_page_cell_data(1).map do |cd|
+    {
+      table_name: cd[:column_values][SCEHMA_TABLE_NAME_COLUMN_IDX],
+      page_num: cd[:column_values][SCEHMA_TABLE_PAGE_NUM_COLUMN_IDX]
+    }
+  end
+end
+
+def get_page_cell_data(page_num)
+  page_stream = get_page(page_num - 1)
+  page_header_offset = page_num == 1 ? 100 : 0
+  cell_count_offset = page_header_offset + 3
+  cell_array_offset = page_header_offset + 8
 
   page_stream.seek(page_header_offset)
   page_type = page_stream.read(1).ord
@@ -104,17 +124,10 @@ def table_info
   page_stream.seek(cell_count_offset)
   num_cells = page_stream.read(2).unpack1('n')
 
-  cell_data = (0...num_cells).each_with_object([]) do |i, arr|
+  (0...num_cells).each_with_object([]) do |i, arr|
     page_stream.seek(cell_array_offset + 2 * i)
     cell_offset = page_stream.read(2).unpack1('n')
     arr << read_cell(page_stream, cell_offset)
-  end
-
-  @table_info = cell_data.map do |cd|
-    {
-      table_name: cd[:column_values][SCEHMA_TABLE_NAME_COLUMN_IDX],
-      page_num: cd[:column_values][SCEHMA_TABLE_PAGE_NUM_COLUMN_IDX]
-    }
   end
 end
 
