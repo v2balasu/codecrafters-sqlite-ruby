@@ -44,7 +44,7 @@ SCEHMA_TABLE_NAME_COLUMN_IDX = 2
 SCEHMA_TABLE_PAGE_NUM_COLUMN_IDX = 3
 SCHEMA_TABLE_SQL_COLUMN_INDEX = 4
 
-READ_QUERY_REGEX = /^SELECT ([A-z,\s]+) FROM ([A-z]+)$/i
+READ_QUERY_REGEX = /^SELECT (?<column_names>[A-z,\s]+) FROM (?<table_name>[A-z]+)( WHERE (?<where_clause>[A-z\s]+=[A-z\s]+)$|$)/i
 COUNT_QUERY_REGEX = /^SELECT COUNT\(\*\) FROM [A-z]+$/i
 
 def main
@@ -112,12 +112,32 @@ end
 
 def read_query(query_str)
   match_data = READ_QUERY_REGEX.match(query_str)
-  column_names = match_data[1].split(',').map(&:strip)
-  table_name = match_data[2]
 
+  table_name = match_data['table_name']
   table_data = table_info.find { |ti| ti[:table_name] == table_name }
   raise "Invalid table #{table_name}" unless table_data
 
+  table_records = get_page_cell_data(table_data[:page_num])
+
+  where_clause = match_data['where_clause']
+  if where_clause
+    col_name, col_value = where_clause.split('=').map(&:strip)
+    filter_records!(col_name, col_value, table_data, table_records)
+  end
+
+  column_names = match_data['column_names'].split(',').map(&:strip)
+  values = select_cols(column_names, table_data, table_records)
+  puts(values.map { |v| v.join('|') })
+end
+
+def filter_records!(col_name, col_value, table_data, records)
+  col_idx = table_data[:col_info].find_index { |ci| ci[:name] == col_name }
+  raise "Invalid column name #{name}" unless col_idx
+
+  records.select! { |r| r[:column_values][col_idx] == col_value }
+end
+
+def select_cols(column_names, table_data, records)
   indexes = column_names.map do |name|
     col_idx = table_data[:col_info].find_index { |ci| ci[:name] == name }
     raise "Invalid column name #{name}" unless col_idx
@@ -125,11 +145,7 @@ def read_query(query_str)
     col_idx
   end
 
-  cell_data = get_page_cell_data(table_data[:page_num])
-
-  values = cell_data.map { |cd| cd[:column_values].values_at(*indexes).join('|') }
-
-  puts values.join("\n")
+  records.map { |r| r[:column_values].values_at(*indexes) }
 end
 
 def table_info
