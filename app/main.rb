@@ -91,14 +91,36 @@ def tables
 end
 
 def query(query_str)
-  raise "Unsupported Query #{query_str}" unless query_str.match?(/^SELECT COUNT\(\*\) FROM [a-z]+$/i)
+  return count_query(query_str) if query_str.match?(/^SELECT COUNT\(\*\) FROM [A-z]+$/i)
+  return read_query(query_str) if query_str.match?(/^SELECT [A-z]+ FROM [A-z]+$/i)
 
+  raise "Unsupported Query #{query_str}"
+end
+
+def count_query(query_str)
   table_name = query_str.split[-1]
   table_data = table_info.find { |ti| ti[:table_name] == table_name }
 
   raise "Invalid table #{table_name}" unless table_data
 
   puts get_page_cell_data(table_data[:page_num]).count
+end
+
+def read_query(query_str)
+  query_components = query_str.split
+  column_name = query_components[1]
+  table_name = query_components[-1]
+
+  table_data = table_info.find { |ti| ti[:table_name] == table_name }
+  raise "Invalid table #{table_name}" unless table_data
+
+  col_idx = table_data[:col_info].find_index { |ci| ci[:name] == column_name }
+  raise "Invalid column name #{column_name}" unless col_idx
+
+  cell_data = get_page_cell_data(table_data[:page_num])
+  values = cell_data.map { |cd| cd[:column_values][col_idx] }
+
+  puts values.join("\n")
 end
 
 def table_info
