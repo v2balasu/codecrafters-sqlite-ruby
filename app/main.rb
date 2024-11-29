@@ -41,6 +41,7 @@ INTERNAL_TABLE_NAMES = %w[
 ].freeze
 
 SCEHMA_TABLE_NAME_COLUMN_IDX = 2
+SCEHMA_TABLE_PAGE_NUM_COLUMN_IDX = 3
 
 def main
   @database_file_path = ARGV[0]
@@ -83,6 +84,14 @@ def dbinfo
 end
 
 def tables
+  table_names = table_info.map { |ti| ti[:table_name] }
+  table_names.reject! { |name| INTERNAL_TABLE_NAMES.include?(name) }
+  puts table_names.join("\s")
+end
+
+def table_info
+  return @table_info unless @table_info.nil?
+
   page_stream = get_page(0)
   page_header_offset = 100
   cell_count_offset = 103
@@ -101,9 +110,12 @@ def tables
     arr << read_cell(page_stream, cell_offset)
   end
 
-  table_names = cell_data.map { |cd| cd[:column_values][SCEHMA_TABLE_NAME_COLUMN_IDX] }
-  table_names.reject! { |name| INTERNAL_TABLE_NAMES.include?(name) }
-  puts table_names.join("\s")
+  @table_info = cell_data.map do |cd|
+    {
+      table_name: cd[:column_values][SCEHMA_TABLE_NAME_COLUMN_IDX],
+      page_num: cd[:column_values][SCEHMA_TABLE_PAGE_NUM_COLUMN_IDX]
+    }
+  end
 end
 
 def read_cell(page_stream, offset)
