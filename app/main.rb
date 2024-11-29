@@ -107,7 +107,12 @@ def count_query(query_str)
 
   raise "Invalid table #{table_name}" unless table_data
 
-  puts get_page_cell_data(table_data[:page_num]).count
+  count = 0
+  get_page_cell_data(table_data[:page_num]) do |page_records|
+    count += page_records.count
+  end
+
+  puts count
 end
 
 def read_query(query_str)
@@ -230,7 +235,7 @@ def read_leaf_cell(page_stream, offset)
   record_data = read_record(page_stream)
   column_values = record_data[:column_values]
 
-  # Hack
+  # TOOD: Temp hack to populate id column value
   column_values[0] = row_id if column_values.first.nil?
 
   {
