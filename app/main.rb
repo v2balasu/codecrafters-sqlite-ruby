@@ -44,6 +44,9 @@ SCEHMA_TABLE_NAME_COLUMN_IDX = 2
 SCEHMA_TABLE_PAGE_NUM_COLUMN_IDX = 3
 SCHEMA_TABLE_SQL_COLUMN_INDEX = 4
 
+READ_QUERY_REGEX = /^SELECT ([A-z,\s]+) FROM ([A-z]+)$/i
+COUNT_QUERY_REGEX = /^SELECT COUNT\(\*\) FROM [A-z]+$/i
+
 def main
   @database_file_path = ARGV[0]
   command = ARGV[1]
@@ -92,8 +95,8 @@ end
 
 def query(query_str)
   # TODO: SQL Parser
-  return count_query(query_str) if query_str.match?(/^SELECT COUNT\(\*\) FROM [A-z]+$/i)
-  return read_query(query_str) if query_str.match?(/^SELECT ([A-z,\s]+) FROM [A-z]+$/i)
+  return count_query(query_str) if query_str.match?(COUNT_QUERY_REGEX)
+  return read_query(query_str) if query_str.match?(READ_QUERY_REGEX)
 
   raise "Unsupported Query #{query_str}"
 end
@@ -108,8 +111,7 @@ def count_query(query_str)
 end
 
 def read_query(query_str)
-  regex = /^SELECT ([A-z,\s]+) FROM ([A-z]+)$/i
-  match_data = regex.match(query_str)
+  match_data = READ_QUERY_REGEX.match(query_str)
   column_names = match_data[1].split(',').map(&:strip)
   table_name = match_data[2]
 
