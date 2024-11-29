@@ -90,7 +90,7 @@ def tables
 end
 
 def query(query_str)
-  raise "Unsupported Query #{query_str}" unless query_str.match?(/^SELECT COUNT\(\*\) FROM [a-z]+$/)
+  raise "Unsupported Query #{query_str}" unless query_str.match?(/^SELECT COUNT\(\*\) FROM [a-z]+$/i)
 
   table_name = query_str.split[-1]
   table_data = table_info.find { |ti| ti[:table_name] == table_name }
