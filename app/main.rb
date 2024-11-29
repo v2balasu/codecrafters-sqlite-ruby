@@ -117,17 +117,20 @@ def read_query(query_str)
   table_data = table_info.find { |ti| ti[:table_name] == table_name }
   raise "Invalid table #{table_name}" unless table_data
 
-  table_records = get_page_cell_data(table_data[:page_num])
+  query_results = []
 
-  where_clause = match_data['where_clause']
-  if where_clause
-    col_name, col_value = where_clause.split('=').map(&:strip).map { |v| v.gsub(/'|"/, '') }
-    filter_records!(col_name, col_value, table_data, table_records)
+  get_page_cell_data(table_data[:page_num]) do |page_records|
+    where_clause = match_data['where_clause']
+    if where_clause
+      col_name, col_value = where_clause.split('=').map(&:strip).map { |v| v.gsub(/'|"/, '') }
+      filter_records!(col_name, col_value, table_data, page_records)
+    end
+
+    column_names = match_data['column_names'].split(',').map(&:strip)
+    query_results.concat(select_cols(column_names, table_data, page_records))
   end
 
-  column_names = match_data['column_names'].split(',').map(&:strip)
-  values = select_cols(column_names, table_data, table_records)
-  puts(values.map { |v| v.join('|') })
+  puts(query_results.map { |v| v.join('|') })
 end
 
 def filter_records!(col_name, col_value, table_data, records)
@@ -151,20 +154,22 @@ end
 def table_info
   return @table_info unless @table_info.nil?
 
-  @table_info = get_page_cell_data(1).map do |cd|
-    table_create_sql = cd[:column_values][SCHEMA_TABLE_SQL_COLUMN_INDEX]
-    col_info = parse_column_info(table_create_sql)
+  get_page_cell_data(1) do |cell_data|
+    @table_info = cell_data.map do |cd|
+      table_create_sql = cd[:column_values][SCHEMA_TABLE_SQL_COLUMN_INDEX]
+      col_info = parse_column_info(table_create_sql)
 
-    {
-      table_name: cd[:column_values][SCEHMA_TABLE_NAME_COLUMN_IDX],
-      page_num: cd[:column_values][SCEHMA_TABLE_PAGE_NUM_COLUMN_IDX],
-      col_info: col_info
-    }
+      {
+        table_name: cd[:column_values][SCEHMA_TABLE_NAME_COLUMN_IDX],
+        page_num: cd[:column_values][SCEHMA_TABLE_PAGE_NUM_COLUMN_IDX],
+        col_info: col_info
+      }
+    end
   end
 end
 
 def parse_column_info(sql_str)
-  regex = /CREATE TABLE [A-z]+\s*\(([^)]+)\)/
+  regex = /CREATE TABLE ["A-z]+\s*\(([^)]+)\)/
   match_data = regex.match(sql_str)
   raise "Invalid sql #{sql_str}" unless match_data
 
@@ -180,35 +185,68 @@ def parse_column_info(sql_str)
   end
 end
 
-def get_page_cell_data(page_num)
+def get_page_cell_data(page_num, &block)
   page_stream = get_page(page_num - 1)
   page_header_offset = page_num == 1 ? 100 : 0
   cell_count_offset = page_header_offset + 3
-  cell_array_offset = page_header_offset + 8
 
   page_stream.seek(page_header_offset)
   page_type = page_stream.read(1).ord
-  raise 'Page is not a leaf table b-tree page' unless page_type == 13
+  raise 'Unsupported Page Type' unless [13, 5].include?(page_type)
 
   page_stream.seek(cell_count_offset)
   num_cells = page_stream.read(2).unpack1('n')
 
-  (0...num_cells).each_with_object([]) do |i, arr|
+  cell_array_offset = if page_type == 5
+                        page_header_offset + 12
+                      else
+                        page_header_offset + 8
+                      end
+
+  cell_data = (0...num_cells).each_with_object([]) do |i, arr|
     page_stream.seek(cell_array_offset + 2 * i)
     cell_offset = page_stream.read(2).unpack1('n')
-    arr << read_cell(page_stream, cell_offset)
+
+    arr << if page_type == 13
+             read_leaf_cell(page_stream, cell_offset)
+           else
+             read_interior_cell(page_stream, cell_offset)
+           end
+  end
+
+  if page_type == 5
+    cell_data.each do |cd|
+      get_page_cell_data(cd[:page_num], &block)
+    end
+  else
+    yield cell_data
   end
 end
 
-def read_cell(page_stream, offset)
+def read_leaf_cell(page_stream, offset)
   page_stream.seek(offset)
   _record_size = get_var_length(page_stream)
   row_id = get_var_length(page_stream)
   record_data = read_record(page_stream)
+  column_values = record_data[:column_values]
+
+  # Hack
+  column_values[0] = row_id if column_values.first.nil?
 
   {
     row_id: row_id,
     column_values: record_data[:column_values]
+  }
+end
+
+def read_interior_cell(page_stream, offset)
+  page_stream.seek(offset)
+  page_num = page_stream.read(4).unpack1('N')
+  row_id = get_var_length(page_stream)
+
+  {
+    page_num: page_num,
+    row_id: row_id
   }
 end
 
@@ -227,7 +265,6 @@ def read_record(page_stream)
   end
 
   column_values = column_type_codes.map { |code| read_col_value(page_stream, code) }
-
   {
     column_type_codes: column_type_codes,
     column_values: column_values
