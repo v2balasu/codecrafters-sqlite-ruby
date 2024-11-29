@@ -44,7 +44,7 @@ SCEHMA_TABLE_NAME_COLUMN_IDX = 2
 SCEHMA_TABLE_PAGE_NUM_COLUMN_IDX = 3
 SCHEMA_TABLE_SQL_COLUMN_INDEX = 4
 
-READ_QUERY_REGEX = /^SELECT (?<column_names>[A-z,\s]+) FROM (?<table_name>[A-z]+)( WHERE (?<where_clause>[A-z\s]+=[A-z\s]+)$|$)/i
+READ_QUERY_REGEX = /^SELECT (?<column_names>[A-z,\s]+) FROM (?<table_name>[A-z]+)( WHERE (?<where_clause>[A-z\s]+=[A-z\s']+)$|$)/i
 COUNT_QUERY_REGEX = /^SELECT COUNT\(\*\) FROM [A-z]+$/i
 
 def main
@@ -121,7 +121,7 @@ def read_query(query_str)
 
   where_clause = match_data['where_clause']
   if where_clause
-    col_name, col_value = where_clause.split('=').map(&:strip)
+    col_name, col_value = where_clause.split('=').map(&:strip).map { |v| v.gsub(/'|"/, '') }
     filter_records!(col_name, col_value, table_data, table_records)
   end
 
