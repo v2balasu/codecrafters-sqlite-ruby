@@ -42,6 +42,7 @@ INTERNAL_TABLE_NAMES = %w[
 
 SCEHMA_TABLE_NAME_COLUMN_IDX = 2
 SCEHMA_TABLE_PAGE_NUM_COLUMN_IDX = 3
+SCHEMA_TABLE_SQL_COLUMN_INDEX = 4
 
 def main
   @database_file_path = ARGV[0]
@@ -104,9 +105,30 @@ def table_info
   return @table_info unless @table_info.nil?
 
   @table_info = get_page_cell_data(1).map do |cd|
+    table_create_sql = cd[:column_values][SCHEMA_TABLE_SQL_COLUMN_INDEX]
+    col_info = parse_column_info(table_create_sql)
+
     {
       table_name: cd[:column_values][SCEHMA_TABLE_NAME_COLUMN_IDX],
-      page_num: cd[:column_values][SCEHMA_TABLE_PAGE_NUM_COLUMN_IDX]
+      page_num: cd[:column_values][SCEHMA_TABLE_PAGE_NUM_COLUMN_IDX],
+      col_info: col_info
+    }
+  end
+end
+
+def parse_column_info(sql_str)
+  regex = /CREATE TABLE [A-z]+\s*\(([^)]+)\)/
+  match_data = regex.match(sql_str)
+  raise "Invalid sql #{sql_str}" unless match_data
+
+  column_lines = match_data[1].split(',')
+
+  column_lines.map do |line|
+    name, type, *meta = line.split
+    {
+      name: name,
+      type: type,
+      meta: meta
     }
   end
 end
