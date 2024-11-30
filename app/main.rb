@@ -1,39 +1,6 @@
+require 'byebug'
 require 'stringio'
-
-COLUMN_TYPE_CODE_MAPPING = {
-  0 => {
-    klass: NilClass,
-    byte_length: 0
-  },
-  1 => {
-    klass: Integer,
-    byte_length: 1
-  },
-  2 => {
-    klass: Integer,
-    byte_length: 2
-  },
-  3 => {
-    klass: Integer,
-    byte_length: 3
-  },
-  4 => {
-    klass: Integer,
-    byte_length: 4
-  },
-  5 => {
-    klass: Integer,
-    byte_length: 6
-  },
-  6 => {
-    klass: Integer,
-    byte_length: 8
-  },
-  7 => {
-    klass: Float,
-    byte_length: 8
-  }
-}.freeze
+require_relative 'table_page_manager'
 
 INTERNAL_TABLE_NAMES = %w[
   sqlite_sequence
@@ -50,6 +17,9 @@ COUNT_QUERY_REGEX = /^SELECT COUNT\(\*\) FROM [A-z]+$/i
 def main
   @database_file_path = ARGV[0]
   command = ARGV[1]
+
+  @database_file = File.open(@database_file_path, 'rb')
+  @table_page_manager = TablePageManager.new(@database_file, db_metadata)
 
   case command
   when '.dbinfo'
@@ -108,8 +78,9 @@ def count_query(query_str)
   raise "Invalid table #{table_name}" unless table_data
 
   count = 0
-  get_page_cell_data(table_data[:page_num]) do |page_records|
-    count += page_records.count
+
+  @table_page_manager.paginate(table_data[:page_num]) do |page|
+    count += page.record_ids.count
   end
 
   puts count
@@ -124,28 +95,29 @@ def read_query(query_str)
 
   query_results = []
 
-  get_page_cell_data(table_data[:page_num]) do |page_records|
+  @table_page_manager.paginate(table_data[:page_num]) do |page|
     where_clause = match_data['where_clause']
+
     if where_clause
       col_name, col_value = where_clause.split('=').map(&:strip).map { |v| v.gsub(/'|"/, '') }
-      filter_records!(col_name, col_value, table_data, page_records)
+      filter_records!(col_name, col_value, table_data, page)
     end
 
     column_names = match_data['column_names'].split(',').map(&:strip)
-    query_results.concat(select_cols(column_names, table_data, page_records))
+    query_results.concat(select_cols(column_names, table_data, page))
   end
 
   puts(query_results.map { |v| v.join('|') })
 end
 
-def filter_records!(col_name, col_value, table_data, records)
+def filter_records!(col_name, col_value, table_data, page)
   col_idx = table_data[:col_info].find_index { |ci| ci[:name] == col_name }
   raise "Invalid column name #{name}" unless col_idx
 
-  records.select! { |r| r[:column_values][col_idx] == col_value }
+  page.record_values.select! { |r| r[col_idx] == col_value }
 end
 
-def select_cols(column_names, table_data, records)
+def select_cols(column_names, table_data, page)
   indexes = column_names.map do |name|
     col_idx = table_data[:col_info].find_index { |ci| ci[:name] == name }
     raise "Invalid column name #{name}" unless col_idx
@@ -153,24 +125,51 @@ def select_cols(column_names, table_data, records)
     col_idx
   end
 
-  records.map { |r| r[:column_values].values_at(*indexes) }
+  page.record_values.map { |r| r.values_at(*indexes) }
 end
 
 def table_info
   return @table_info unless @table_info.nil?
 
-  get_page_cell_data(1) do |cell_data|
-    @table_info = cell_data.map do |cd|
-      table_create_sql = cd[:column_values][SCHEMA_TABLE_SQL_COLUMN_INDEX]
-      col_info = parse_column_info(table_create_sql)
+  page = @table_page_manager.fetch_page(1)
+  table_defs = page.record_values.select { |rv| rv.first == 'table' }
 
-      {
-        table_name: cd[:column_values][SCEHMA_TABLE_NAME_COLUMN_IDX],
-        page_num: cd[:column_values][SCEHMA_TABLE_PAGE_NUM_COLUMN_IDX],
-        col_info: col_info
-      }
-    end
+  @table_info = table_defs.map do |td|
+    table_create_sql = td[SCHEMA_TABLE_SQL_COLUMN_INDEX]
+    col_info = parse_column_info(table_create_sql)
+
+    {
+      table_name: td[SCEHMA_TABLE_NAME_COLUMN_IDX],
+      page_num: td[SCEHMA_TABLE_PAGE_NUM_COLUMN_IDX],
+      col_info: col_info
+    }
   end
+end
+
+def index_info
+  return @index_info unless @index_info.nil?
+
+  page = @table_page_manager.fetch_page(1)
+  index_defs = page.record_values.select { |rv| rv.first == 'index' }
+
+  @index_info = index_defs.map do |id|
+    index_create_sql = id[SCHEMA_TABLE_SQL_COLUMN_INDEX]
+    parse_index_info(index_create_sql).merge({
+                                               page_num: id[SCEHMA_TABLE_PAGE_NUM_COLUMN_IDX]
+                                             })
+  end
+end
+
+def parse_index_info(sql_str)
+  regex = /CREATE INDEX (?<idx_name>[^\s]+)\s+on\s*(?<table_name>[^\s]+)\s+\((?<index_col>[^\s]+)\)/
+  match_data = regex.match(sql_str)
+  raise "Invalid sql #{sql_str}" unless match_data
+
+  {
+    name: match_data['idx_name'],
+    table: match_data['table_name'],
+    col: match_data['index_col']
+  }
 end
 
 def parse_column_info(sql_str)
@@ -188,155 +187,6 @@ def parse_column_info(sql_str)
       meta: meta
     }
   end
-end
-
-def get_page_cell_data(page_num, &block)
-  page_stream = get_page(page_num - 1)
-  page_header_offset = page_num == 1 ? 100 : 0
-  cell_count_offset = page_header_offset + 3
-
-  page_stream.seek(page_header_offset)
-  page_type = page_stream.read(1).ord
-  raise 'Unsupported Page Type' unless [13, 5].include?(page_type)
-
-  page_stream.seek(cell_count_offset)
-  num_cells = page_stream.read(2).unpack1('n')
-
-  cell_array_offset = if page_type == 5
-                        page_header_offset + 12
-                      else
-                        page_header_offset + 8
-                      end
-
-  cell_data = (0...num_cells).each_with_object([]) do |i, arr|
-    page_stream.seek(cell_array_offset + 2 * i)
-    cell_offset = page_stream.read(2).unpack1('n')
-
-    arr << if page_type == 13
-             read_leaf_cell(page_stream, cell_offset)
-           else
-             read_interior_cell(page_stream, cell_offset)
-           end
-  end
-
-  if page_type == 5
-    cell_data.each do |cd|
-      get_page_cell_data(cd[:page_num], &block)
-    end
-  else
-    yield cell_data
-  end
-end
-
-def read_leaf_cell(page_stream, offset)
-  page_stream.seek(offset)
-  _record_size = get_var_length(page_stream)
-  row_id = get_var_length(page_stream)
-  record_data = read_record(page_stream)
-  column_values = record_data[:column_values]
-
-  # TOOD: Temp hack to populate id column value
-  column_values[0] = row_id if column_values.first.nil?
-
-  {
-    row_id: row_id,
-    column_values: record_data[:column_values]
-  }
-end
-
-def read_interior_cell(page_stream, offset)
-  page_stream.seek(offset)
-  page_num = page_stream.read(4).unpack1('N')
-  row_id = get_var_length(page_stream)
-
-  {
-    page_num: page_num,
-    row_id: row_id
-  }
-end
-
-def read_record(page_stream)
-  header_length = get_var_length(page_stream)
-  bytes_to_read = header_length - (header_length.bit_length / 8.00).ceil
-
-  start_pos = page_stream.pos
-  bytes_processed = 0
-  column_type_codes = []
-
-  while bytes_processed < bytes_to_read
-    column_type_codes << get_var_length(page_stream)
-    bytes_processed += page_stream.pos - start_pos
-    start_pos = page_stream.pos
-  end
-
-  column_values = column_type_codes.map { |code| read_col_value(page_stream, code) }
-  {
-    column_type_codes: column_type_codes,
-    column_values: column_values
-  }
-end
-
-def read_col_value(page_stream, type_code)
-  raise 'Unsupported type' if [10, 11].include?(type_code)
-
-  return 0 if type_code == 8
-  return 1 if type_code == 9
-  return nil if type_code.zero?
-
-  klass, byte_length = if type_code <= 7
-                         COLUMN_TYPE_CODE_MAPPING[type_code].values_at(:klass, :byte_length)
-                       elsif type_code.even?
-                         [String, (type_code - 12) / 2]
-                       else
-                         [String, (type_code - 13) / 2]
-                       end
-
-  bytes = page_stream.read(byte_length)
-
-  return bytes.to_s if klass == String
-  return bytes.unpack1('g') if klass == Float
-  return unless klass == Integer
-
-  convert_to_signed_int(bytes, byte_length)
-end
-
-def convert_to_signed_int(bytes, length)
-  bits = bytes.unpack("C#{length}").reverse.reduce(0) do |curr, byte|
-    (curr << 8) | byte
-  end
-
-  is_signed = (bits >> (length * 8 - 1)) == 1
-
-  if is_signed
-    -1 * (bits - (1 << length * 8 - 1))
-  else
-    bits
-  end
-end
-
-def get_page(page_num)
-  page_size = db_metadata[:page_size]
-
-  File.open(@database_file_path, 'rb') do |database_file|
-    database_file.seek(page_num * page_size)
-    StringIO.new database_file.read(page_size)
-  end
-end
-
-def get_var_length(buffer)
-  length = 0
-
-  byte = 0
-
-  8.times do
-    byte = buffer.read(1).ord
-    length = (length << 7) | (byte & 0b01111111)
-    break if (byte & 0b10000000).zero?
-  end
-
-  length = (length << 8) | byte unless (byte & 0b10000000).zero?
-
-  length
 end
 
 main
