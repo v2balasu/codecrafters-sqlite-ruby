@@ -51,7 +51,7 @@ class Utils
 
     bytes = stream.read(byte_length)
 
-    return bytes.to_s if klass == String
+    return bytes.force_encoding('utf-8') if klass == String
     return bytes.unpack1('g') if klass == Float
     return unless klass == Integer
 
@@ -59,14 +59,14 @@ class Utils
   end
 
   def self.convert_to_signed_int(bytes, length)
-    bits = bytes.unpack("C#{length}").reverse.reduce(0) do |curr, byte|
+    bits = bytes.unpack("C#{length}").reduce(0) do |curr, byte|
       (curr << 8) | byte
     end
 
     is_signed = (bits >> (length * 8 - 1)) == 1
 
     if is_signed
-      -1 * (bits - (1 << length * 8 - 1))
+      bits - (1 << length * 8)
     else
       bits
     end

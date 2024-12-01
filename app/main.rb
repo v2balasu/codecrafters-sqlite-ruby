@@ -1,6 +1,6 @@
-require 'byebug'
 require 'stringio'
 require_relative 'table_page_manager'
+require_relative 'index_page_manager'
 
 INTERNAL_TABLE_NAMES = %w[
   sqlite_sequence
@@ -20,6 +20,7 @@ def main
 
   @database_file = File.open(@database_file_path, 'rb')
   @table_page_manager = TablePageManager.new(@database_file, db_metadata)
+  @index_page_manager = IndexPageManager.new(@database_file, db_metadata)
 
   case command
   when '.dbinfo'
@@ -93,31 +94,53 @@ def read_query(query_str)
   table_data = table_info.find { |ti| ti[:table_name] == table_name }
   raise "Invalid table #{table_name}" unless table_data
 
+  column_names = match_data['column_names'].split(',').map(&:strip)
+  where_clause = match_data['where_clause']
+  search_col_name, search_col_value = where_clause&.split('=')&.map(&:strip)&.map { |v| v.gsub(/'|"/, '') }
+  is_indexed = search_col_name &&
+               index_info.any? { |info| info[:table] == table_name && info[:col] == search_col_name }
+
+  if is_indexed
+    query_index_scan(table_data, column_names, search_col_name, search_col_value)
+  else
+    query_full_scan(table_data, column_names, search_col_name, search_col_value)
+  end
+end
+
+def query_index_scan(table_data, column_names, search_col_name, search_col_value)
+  first_page = @index_info.first[:page_num]
+
+  row_ids = []
+  @index_page_manager.paginate_search_records(first_page, search_col_value) do |records|
+    row_ids.concat(records.map(&:row_id))
+  end
+  pp row_ids
+end
+
+def query_full_scan(table_data, column_names, search_col_name, search_col_value)
   query_results = []
 
   @table_page_manager.paginate(table_data[:page_num]) do |page|
-    where_clause = match_data['where_clause']
+    records = if search_col_name
+                filter_records(search_col_name, search_col_value, table_data, page)
+              else
+                page.record_values
+              end
 
-    if where_clause
-      col_name, col_value = where_clause.split('=').map(&:strip).map { |v| v.gsub(/'|"/, '') }
-      filter_records!(col_name, col_value, table_data, page)
-    end
-
-    column_names = match_data['column_names'].split(',').map(&:strip)
-    query_results.concat(select_cols(column_names, table_data, page))
+    query_results.concat(select_cols(column_names, table_data, records))
   end
 
   puts(query_results.map { |v| v.join('|') })
 end
 
-def filter_records!(col_name, col_value, table_data, page)
+def filter_records(col_name, col_value, table_data, page)
   col_idx = table_data[:col_info].find_index { |ci| ci[:name] == col_name }
   raise "Invalid column name #{name}" unless col_idx
 
-  page.record_values.select! { |r| r[col_idx] == col_value }
+  page.record_values.select { |r| r[col_idx] == col_value }
 end
 
-def select_cols(column_names, table_data, page)
+def select_cols(column_names, table_data, records)
   indexes = column_names.map do |name|
     col_idx = table_data[:col_info].find_index { |ci| ci[:name] == name }
     raise "Invalid column name #{name}" unless col_idx
@@ -125,7 +148,7 @@ def select_cols(column_names, table_data, page)
     col_idx
   end
 
-  page.record_values.map { |r| r.values_at(*indexes) }
+  records.map { |r| r.values_at(*indexes) }
 end
 
 def table_info
