@@ -8,10 +8,15 @@ class InteriorTablePage
     @header_offset = header_offset
   end
 
-  attr_reader :header_offset, :stream
-
   def child_records
     @child_records ||= cell_infos.map { |ci| InteriorTableRecord.new(ci[:row_id], ci[:page_num]) }
+  end
+
+  def right_page
+    @right_page ||= begin
+      @stream.seek(@header_offset + 8)
+      @stream.read(4).unpack1('N')
+    end
   end
 
   private

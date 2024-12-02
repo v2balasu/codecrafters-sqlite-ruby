@@ -8,12 +8,8 @@ class InteriorIndexPage
     @header_offset = header_offset
   end
 
-  attr_reader :header_offset, :stream
-
-  def record_values
-    return @record_values unless @record_values.nil?
-
-    @record_values = cell_infos.map do |ci|
+  def records
+    @records ||= cell_infos.map do |ci|
       content = read_cell_content(ci[:record_body_offset])
       *keys, row_id = content[:values]
 
@@ -23,7 +19,7 @@ class InteriorIndexPage
 
   def right_page
     @right_page ||= begin
-      @stream.seek(header_offset + 8)
+      @stream.seek(@header_offset + 8)
       @stream.read(4).unpack1('N')
     end
   end

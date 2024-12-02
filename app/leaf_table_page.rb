@@ -12,13 +12,15 @@ class LeafTablePage
     @record_ids ||= cell_infos.map { |ci| ci[:row_id] }
   end
 
-  def record_values
-    return @record_values unless @record_values.nil?
+  def records
+    return @records unless @records.nil?
 
-    @record_values = cell_infos.map { |ci| read_cell_content(ci[:record_body_offset], ci[:row_id]) }
+    @records = cell_infos
+               .map { |ci| read_cell_content(ci[:record_body_offset], ci[:row_id]) }
   end
 
-  # private
+  private
+
   def cell_infos
     return @cell_infos unless @cell_infos.nil?
 

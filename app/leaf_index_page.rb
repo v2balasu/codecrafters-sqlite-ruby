@@ -10,10 +10,10 @@ class LeafIndexPage
 
   attr_reader :header_offset, :stream
 
-  def record_values
-    return @record_values unless @record_values.nil?
+  def records
+    return @records unless @records.nil?
 
-    @record_values = cell_infos.map do |ci|
+    @records = cell_infos.map do |ci|
       content = read_cell_content(ci[:record_body_offset])
       *keys, row_id = content[:values]
 
@@ -21,7 +21,8 @@ class LeafIndexPage
     end
   end
 
-  # private
+  private
+
   def cell_infos
     return @cell_infos unless @cell_infos.nil?
 

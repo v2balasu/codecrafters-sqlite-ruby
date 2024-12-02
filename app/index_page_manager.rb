@@ -7,84 +7,46 @@ class IndexPageManager
     @db_metadata = db_metadata
   end
 
-  def fetch_page(page_num)
-    load_page(page_num) do |data|
-      page_type, stream, header_offset = data.values_at(:page_type, :stream, :header_offset)
-      klass = page_type == :leaf ? LeafIndexPage : InteriorIndexPage
-      return klass.new(stream, header_offset)
-    end
-  end
+  def search_value(page_num, key, results, search_cache = {})
+    return if search_cache[page_num]
 
-  def paginate_search_records(start_page_num, search_value, &block)
-    page = fetch_page(start_page_num)
-    results = find_in_page(page, search_value)
-    yield results if results
+    page = fetch_page(page_num)
 
-    return unless page.is_a?(InteriorIndexPage)
+    matched = page.records.select { |r| r.key == key }
+    results.concat(matched)
 
-    puts 'PROCESS INTERIOR PAGE'
-    page.record_values.each { |r| paginate_search_records(r.page_num, search_value, &block) }
-  end
-
-  def find_in_page(page, search_value)
-    search_idx = page.record_values.bsearch_index { |r| r.key >= search_value }
-    return nil unless search_idx && page.record_values[search_idx].key == search_value
-
-    # puts "SEARCH IDX #{search_idx} #{page.record_values.length}"
-    index_records = [page.record_values[search_idx]]
-
-    idx = search_idx + 1
-    while idx < page.record_values.length && page.record_values[idx].key == search_value
-      index_records << page.record_values[idx]
-      idx += 1
+    if page.is_a?(InteriorIndexPage)
+      search_pages = find_search_records(page.records, key).map(&:page_num) # found_records.map(&:page_num)
+      search_pages.each { |num| search_value(num, key, results, search_cache) }
     end
 
-    idx = search_idx - 1
-    while idx >= 0 && page.record_values[idx].key == search_value
-      index_records << page.record_values[idx]
-      idx -= 1
-    end
-
-    index_records
-  end
-
-  def paginate(start_page_num, &block)
-    page = fetch_page(start_page_num)
-
-    if page.is_a?(LeafIndexPage)
-      yield page
-      page.record_values.map(&:overflow_page_num).compact.each do |op|
-        paginate(op, &block)
-      end
-    else
-      puts 'PROCESS INTERIOR PAGE'
-      page.record_values.each do |record|
-        paginate(record.page_num, &block)
-      end
-    end
+    search_cache[page_num] = true
   end
 
   private
 
-  def load_page(page_num)
+  def find_search_records(records, key)
+    idx = records.bsearch_index { |r| r.key >= key }
+    return [] unless idx
+
+    idx += 1 unless idx == records.length - 1
+    records[0..idx]
+  end
+
+  def fetch_page(page_num)
     page_size = @db_metadata[:page_size]
-    @database_file.seek((page_num - 1) * page_size)
+    page_offset = (page_num - 1) * page_size
+    page_type_offset = page_num == 1 ? 100 : 0
+
+    @database_file.seek(page_offset)
     stream = StringIO.new @database_file.read(page_size)
 
-    page_type_offset = page_num == 1 ? 100 : 0
     stream.seek(page_type_offset)
     page_type = stream.read(1).ord
     raise "Not table tree, page type is #{page_type}" unless [10, 2].include?(page_type)
 
     stream.seek(0)
-
-    data = {
-      page_type: page_type == 2 ? :interior : :leaf,
-      header_offset: page_type_offset,
-      stream: stream
-    }
-
-    yield data
-    stream.close
+    klass = page_type == 10 ? LeafIndexPage : InteriorIndexPage
+    klass.new(stream, page_type_offset)
   end
 end

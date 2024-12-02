@@ -110,11 +110,20 @@ end
 def query_index_scan(table_data, column_names, search_col_name, search_col_value)
   first_page = @index_info.first[:page_num]
 
-  row_ids = []
-  @index_page_manager.paginate_search_records(first_page, search_col_value) do |records|
-    row_ids.concat(records.map(&:row_id))
+  results = []
+
+  @index_page_manager.search_value(first_page, search_col_value, results)
+
+  row_ids = results.map(&:row_id)
+
+  query_results = []
+
+  @table_page_manager.paginate(table_data[:page_num], row_ids) do |page|
+    matching_records = page.records.select { |r| row_ids.include?(r.first) }
+    query_results.concat(select_cols(column_names, table_data, matching_records))
   end
-  pp row_ids
+
+  puts(query_results.map { |v| v.join('|') })
 end
 
 def query_full_scan(table_data, column_names, search_col_name, search_col_value)
@@ -124,7 +133,7 @@ def query_full_scan(table_data, column_names, search_col_name, search_col_value)
     records = if search_col_name
                 filter_records(search_col_name, search_col_value, table_data, page)
               else
-                page.record_values
+                page.records
               end
 
     query_results.concat(select_cols(column_names, table_data, records))
@@ -137,7 +146,7 @@ def filter_records(col_name, col_value, table_data, page)
   col_idx = table_data[:col_info].find_index { |ci| ci[:name] == col_name }
   raise "Invalid column name #{name}" unless col_idx
 
-  page.record_values.select { |r| r[col_idx] == col_value }
+  page.records.select { |r| r[col_idx] == col_value }
 end
 
 def select_cols(column_names, table_data, records)
@@ -155,7 +164,7 @@ def table_info
   return @table_info unless @table_info.nil?
 
   page = @table_page_manager.fetch_page(1)
-  table_defs = page.record_values.select { |rv| rv.first == 'table' }
+  table_defs = page.records.select { |rv| rv.first == 'table' }
 
   @table_info = table_defs.map do |td|
     table_create_sql = td[SCHEMA_TABLE_SQL_COLUMN_INDEX]
@@ -173,7 +182,7 @@ def index_info
   return @index_info unless @index_info.nil?
 
   page = @table_page_manager.fetch_page(1)
-  index_defs = page.record_values.select { |rv| rv.first == 'index' }
+  index_defs = page.records.select { |rv| rv.first == 'index' }
 
   @index_info = index_defs.map do |id|
     index_create_sql = id[SCHEMA_TABLE_SQL_COLUMN_INDEX]
