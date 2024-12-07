@@ -97,29 +97,25 @@ def read_query(query_str)
   column_names = match_data['column_names'].split(',').map(&:strip)
   where_clause = match_data['where_clause']
   search_col_name, search_col_value = where_clause&.split('=')&.map(&:strip)&.map { |v| v.gsub(/'|"/, '') }
-  is_indexed = search_col_name &&
-               index_info.any? { |info| info[:table] == table_name && info[:col] == search_col_name }
+  index = index_info.first { |info| search_col_name && info[:table] == table_name && info[:col] == search_col_name }
 
-  if is_indexed
-    query_index_scan(table_data, column_names, search_col_name, search_col_value)
+  if index
+    query_index_scan(table_data, column_names, index, search_col_value)
   else
     query_full_scan(table_data, column_names, search_col_name, search_col_value)
   end
 end
 
-def query_index_scan(table_data, column_names, search_col_name, search_col_value)
-  first_page = @index_info.first[:page_num]
+def query_index_scan(table_data, column_names, index, search_col_value)
+  first_page = index[:page_num]
 
-  results = []
-
-  @index_page_manager.search_value(first_page, search_col_value, results)
-
-  row_ids = results.map(&:row_id)
-
+  indexed_records = []
+  @index_page_manager.search_value(first_page, search_col_value, indexed_records)
+  indexed_ids = indexed_records.map(&:row_id)
   query_results = []
 
-  @table_page_manager.paginate(table_data[:page_num], row_ids) do |page|
-    matching_records = page.records.select { |r| row_ids.include?(r.first) }
+  @table_page_manager.paginate(table_data[:page_num], indexed_ids) do |page|
+    matching_records = page.records.select { |r| indexed_ids.include?(r.first) }
     query_results.concat(select_cols(column_names, table_data, matching_records))
   end
 
